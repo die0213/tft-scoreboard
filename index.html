@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TFT 점수 내기 (Supabase 실시간)</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide-react@0.292.0/dist/lucide-react.js"></script>
+    <!-- Supabase JS Client -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        body { background-color: #111827; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
+        .modal-backdrop { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.7); display: flex; justify-content: center; align-items: center; z-index: 50; }
+        .modal-content { background-color: #1f2937; padding: 2rem; border-radius: 0.5rem; width: 90%; max-width: 500px; max-height: 90vh; overflow-y: auto; }
+        .tab-button { transition: all 0.2s ease-in-out; }
+        .tab-button.active { background-color: #3b82f6; color: white; }
+        .tab-button:not(.active) { background-color: #374151; }
+        .modal-content::-webkit-scrollbar { width: 8px; }
+        .modal-content::-webkit-scrollbar-track { background: #1f2937; }
+        .modal-content::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 10px; border: 2px solid #1f2937; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+        
+        // --- Supabase 설정 (!!! 중요: 자신의 Supabase 프로젝트 정보로 교체하세요) ---
+        const supabaseUrl = 'https://ufuhfprvwgqsktomfrfn.supabase.co';
+        const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVmdWhmcHJ2d2dxc2t0b21mcmZuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUxODEzNTQsImV4cCI6MjA3MDc1NzM1NH0.pSQuwI0J4k7FBm3BXc88_9aPd2c8N_1fet3CgQ_CcG8';
+
+        // --- React App ---
+        // Supabase 클라이언트가 준비되었는지 확인
+        if (!window.supabase || supabaseUrl === 'YOUR_SUPABASE_URL' || supabaseAnonKey === 'YOUR_SUPABASE_ANON_KEY') {
+            const ErrorDisplay = () => (
+                <div className="h-screen flex items-center justify-center text-center">
+                    <div className="bg-red-900 border border-red-700 text-red-200 px-8 py-6 rounded-lg shadow-lg">
+                        <h2 className="text-2xl font-bold mb-4">Supabase 설정 필요</h2>
+                        <p>애플리케이션을 실행하려면 코드의 `supabaseUrl`과 `supabaseAnonKey`를<br/>자신의 Supabase 프로젝트 정보로 교체해야 합니다.</p>
+                        <p className="mt-4 text-sm text-red-300">이 메시지는 실제 Supabase 정보로 코드를 업데이트하면 사라집니다.</p>
+                    </div>
+                </div>
+            );
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(<ErrorDisplay />);
+        } else {
+            // Supabase 클라이언트를 앱 최상단에서 한 번만 생성
+            const supabase = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+
+            // --- Generic Icon Component ---
+            const Icon = ({ name, ...props }) => {
+                if (!window.lucide || !window.lucide[name]) {
+                    return <span style={{display: 'inline-block', width: props.size || 16, height: props.size || 16}}></span>;
+                }
+                const LucideIcon = window.lucide[name];
+                return <LucideIcon {...props} />;
+            };
+
+            // --- 초기 데이터 정의 ---
+            const initialSettings = {
+                targetScore: 100,
+                rankScores: { 1: 10, 2: 8, 3: 7, 4: 6, 5: 4, 6: 3, 7: 2, 8: 1 },
+                winStreaks: { 3: 2, 4: 3, 5: 5 },
+                event: { name: "이벤트 없음", description: "...", type: "없음", value: 0, active: false }
+            };
+
+            // --- 메인 앱 컴포넌트 ---
+            function App() {
+                // --- 상태 관리 ---
+                const [teams, setTeams] = useState([]);
+                const [players, setPlayers] = useState([]);
+                const [settings, setSettings] = useState(null);
+                const [history, setHistory] = useState([]);
+                
+                const [activeTab, setActiveTab] = useState('leaderboard');
+                const [isGameModalOpen, setGameModalOpen] = useState(false);
+                const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
+                const [isLoading, setIsLoading] = useState(true);
+
+                // --- 실시간 데이터 로드 (Supabase Realtime) ---
+                useEffect(() => {
+                    // 초기 데이터 로드
+                    const fetchData = async () => {
+                        const { data: teamsData } = await supabase.from('teams').select('*');
+                        const { data: playersData } = await supabase.from('players').select('*');
+                        const { data: historyData } = await supabase.from('history').select('*').order('timestamp', { ascending: false });
+                        const { data: settingsData } = await supabase.from('settings').select('data').eq('id', 1).single();
+
+                        setTeams(teamsData || []);
+                        setPlayers(playersData || []);
+                        setHistory(historyData || []);
+                        if (settingsData) {
+                            setSettings(settingsData.data);
+                        } else {
+                            await supabase.from('settings').upsert({ id: 1, data: initialSettings });
+                            setSettings(initialSettings);
+                        }
+                        setIsLoading(false);
+                    };
+
+                    fetchData();
+
+                    // 실시간 구독 설정
+                    const handleDbChanges = (payload) => {
+                        console.log('Change received!', payload);
+                        fetchData(); // 데이터가 변경되면 전체 데이터를 다시 불러옴
+                    };
+                    
+                    const channels = [
+                        supabase.channel('public:teams').on('postgres_changes', { event: '*', schema: 'public', table: 'teams' }, handleDbChanges).subscribe(),
+                        supabase.channel('public:players').on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, handleDbChanges).subscribe(),
+                        supabase.channel('public:history').on('postgres_changes', { event: '*', schema: 'public', table: 'history' }, handleDbChanges).subscribe(),
+                        supabase.channel('public:settings').on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, handleDbChanges).subscribe()
+                    ];
+
+                    return () => {
+                        channels.forEach(channel => supabase.removeChannel(channel));
+                    };
+                }, []);
+
+                // --- 팀/선수 관리 로직 ---
+                const addTeam = async (name) => {
+                    if (name) await supabase.from('teams').insert({ name });
+                };
+                const removeTeam = async (id) => {
+                    if (players.some(p => p.team_id === id)) {
+                        alert("팀에 소속된 선수가 있어 팀을 삭제할 수 없습니다."); return;
+                    }
+                    await supabase.from('teams').delete().eq('id', id);
+                };
+                const addPlayer = async (name, teamId) => {
+                    if (name) await supabase.from('players').insert({ name, team_id: teamId ? Number(teamId) : null });
+                };
+                const removePlayer = async (id) => {
+                    await supabase.from('players').delete().eq('id', id);
+                };
+                const resetAllData = async () => {
+                    if (window.confirm("정말로 모든 데이터를 초기화하시겠습니까? (설정 제외)")) {
+                        await supabase.from('players').delete().neq('id', 0);
+                        await supabase.from('teams').delete().neq('id', 0);
+                        await supabase.from('history').delete().neq('id', 0);
+                    }
+                };
+                
+                // --- 점수 계산 로직 ---
+                const calculateScores = useCallback(async (gameData) => {
+                    const { mode, results } = gameData;
+                    let scoreChanges = {};
+
+                    let teamBaseScores = {};
+                    if (mode.includes('팀') || mode.includes('단체전')) {
+                        results.forEach(p => {
+                            const playerInfo = players.find(player => player.id === p.id);
+                            if (!playerInfo.team_id) return;
+                            if (!teamBaseScores[playerInfo.team_id]) teamBaseScores[playerInfo.team_id] = { total: 0, members: 0 };
+                            teamBaseScores[playerInfo.team_id].total += settings.rankScores[p.rank] || 0;
+                            teamBaseScores[playerInfo.team_id].members += 1;
+                        });
+                    }
+                    
+                    const playerUpdates = results.map(p => {
+                        const player = players.find(pl => pl.id === p.id);
+                        if (!player) return null;
+
+                        let baseScore;
+                        if ((mode.includes('팀') || mode.includes('단체전')) && player.team_id && teamBaseScores[player.team_id]) {
+                            baseScore = teamBaseScores[player.team_id].total / teamBaseScores[player.team_id].members;
+                        } else {
+                            baseScore = settings.rankScores[p.rank] || 0;
+                        }
+
+                        let streakBonus = 0;
+                        let newWinStreak = player.win_streak || 0;
+                        if (p.rank === 1) {
+                            newWinStreak++;
+                            if (settings.winStreaks[newWinStreak]) streakBonus = settings.winStreaks[newWinStreak];
+                        } else {
+                            newWinStreak = 0;
+                        }
+                        
+                        let eventBonus = 0;
+                        if (settings.event.active) {
+                            if (settings.event.type === '배율') eventBonus = (baseScore * settings.event.value) - baseScore;
+                            else if (settings.event.type === '추가') eventBonus = settings.event.value;
+                        }
+                        
+                        const finalScoreChange = baseScore + streakBonus + eventBonus;
+                        const newScore = (player.score || 0) + finalScoreChange;
+
+                        scoreChanges[player.id] = { name: player.name, rank: p.rank, final: finalScoreChange };
+                        
+                        return { id: player.id, score: newScore, win_streak: newWinStreak };
+                    }).filter(Boolean);
+
+                    await supabase.from('players').upsert(playerUpdates);
+                    await supabase.from('history').insert({ mode, event: settings.event.active ? settings.event.name : '없음', changes: scoreChanges });
+
+                }, [players, teams, settings]);
+
+                // --- 렌더링 데이터 가공 ---
+                const playersWithTeamNames = useMemo(() => players.map(p => ({ ...p, teamName: (teams.find(t => t.id === p.team_id) || {}).name || '개인' })), [players, teams]);
+                const sortedPlayers = useMemo(() => [...playersWithTeamNames].sort((a, b) => (b.score || 0) - (a.score || 0)), [playersWithTeamNames]);
+
+                if (isLoading || !settings) {
+                    return <div className="flex justify-center items-center h-screen"><p>데이터 로딩 중...</p></div>
+                }
+
+                return (
+                    <div className="container mx-auto p-4 md:p-8 max-w-4xl">
+                        <Header />
+                        <div className="flex justify-center my-6">
+                            <button onClick={() => setGameModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg text-lg shadow-lg transition-transform transform hover:scale-105">
+                                <Icon name="Swords" size={20} className="inline-block mr-2" />
+                                경기 결과 입력
+                            </button>
+                        </div>
+                        <div className="bg-gray-800 rounded-lg p-4 shadow-xl">
+                            <div className="flex border-b border-gray-700 mb-4">
+                                <TabButton id="leaderboard" activeTab={activeTab} setActiveTab={setActiveTab} icon="Trophy">순위표</TabButton>
+                                <TabButton id="history" activeTab={activeTab} setActiveTab={setActiveTab} icon="History">경기 기록</TabButton>
+                                <TabButton id="roster" activeTab={activeTab} setActiveTab={setActiveTab} icon="Users">팀/선수 관리</TabButton>
+                                <TabButton id="settings" activeTab={activeTab} setActiveTab={setActiveTab} icon="Settings">리그 설정</TabButton>
+                            </div>
+                            <div>
+                                {activeTab === 'leaderboard' && <Leaderboard players={sortedPlayers} />}
+                                {activeTab === 'history' && <GameHistory history={history} />}
+                                {activeTab === 'roster' && <RosterManagement teams={teams} players={playersWithTeamNames} addTeam={addTeam} removeTeam={removeTeam} addPlayer={addPlayer} removePlayer={removePlayer} />}
+                                {activeTab === 'settings' && <SettingsView settings={settings} setSettingsModalOpen={setSettingsModalOpen} resetAllData={resetAllData} />}
+                            </div>
+                        </div>
+                        <Footer />
+                        {isGameModalOpen && <GameModal players={playersWithTeamNames} onClose={() => setGameModalOpen(false)} onSave={calculateScores} />}
+                        {isSettingsModalOpen && <SettingsModal currentSettings={settings} onClose={() => setSettingsModalOpen(false)} />}
+                    </div>
+                );
+            }
+            
+            // --- 컴포넌트들 ---
+            const Header = () => (<div className="text-center mb-8"><h1 className="text-4xl md:text-5xl font-bold text-white tracking-wider">TFT Scoreboard</h1><p className="text-gray-400 mt-2">전략가들의 점수 경쟁</p></div>);
+            const Footer = () => (<div className="text-center mt-8 text-gray-500 text-sm"><p>Built with React & Supabase</p></div>);
+            const TabButton = ({ id, activeTab, setActiveTab, icon, children }) => (<button className={`tab-button flex-1 py-2 px-4 font-semibold rounded-t-lg focus:outline-none ${activeTab === id ? 'active' : ''}`} onClick={() => setActiveTab(id)}><Icon name={icon} size={16} className="inline-block mr-2" />{children}</button>);
+            const Leaderboard = ({ players }) => (<div>{players.length === 0 ? (<p className="text-center text-gray-400 py-8">선수를 먼저 추가해주세요.</p>) : (<ul className="space-y-3">{players.map((p, index) => (<li key={p.id} className="bg-gray-700 rounded-lg p-4 flex items-center justify-between shadow-md"><div className="flex items-center"><span className={`text-xl font-bold w-8 text-center ${index < 3 ? 'text-yellow-400' : 'text-gray-400'}`}>{index + 1}</span><div className="ml-4"><p className="font-semibold text-lg text-white">{p.name}</p><p className="text-sm text-gray-400">{p.teamName}</p></div></div><div className="text-right"><p className="text-2xl font-bold text-blue-400">{p.score || 0}점</p>{(p.win_streak || 0) > 1 && (<p className="text-sm text-orange-400 animate-pulse">{p.win_streak}연승 중!</p>)}</div></li>))}</ul>)}</div>);
+            const GameHistory = ({ history }) => (<div className="max-h-96 overflow-y-auto pr-2">{history.length === 0 ? (<p className="text-center text-gray-400 py-8">아직 경기 기록이 없습니다.</p>) : (<ul className="space-y-4">{history.map(h => (<li key={h.id} className="bg-gray-700 rounded-lg p-4"><div className="flex justify-between items-center mb-2"><p className="font-bold text-white">{h.mode}</p><p className="text-xs text-gray-400">{new Date(h.timestamp).toLocaleString()}</p></div>{h.event !== '없음' && <p className="text-xs text-purple-400 mb-2">이벤트: {h.event}</p>}<table className="w-full text-sm text-left"><thead className="text-xs text-gray-400 uppercase"><tr><th>#</th><th>이름</th><th>점수</th></tr></thead><tbody className="divide-y divide-gray-600">{h.changes && Object.values(h.changes).sort((a,b) => a.rank - b.rank).map(c => (<tr key={c.name}><td>{c.rank}</td><td>{c.name}</td><td className={c.final >= 0 ? 'text-green-400' : 'text-red-400'}>{c.final >= 0 ? '+' : ''}{c.final.toFixed(2)}</td></tr>))}</tbody></table></li>))}</ul>)}</div>);
+            const RosterManagement = ({ teams, players, addTeam, removeTeam, addPlayer, removePlayer }) => {
+                const [teamName, setTeamName] = useState('');
+                const [playerName, setPlayerName] = useState('');
+                const [selectedTeamId, setSelectedTeamId] = useState('');
+                const handleAddTeam = (e) => { e.preventDefault(); addTeam(teamName); setTeamName(''); };
+                const handleAddPlayer = (e) => { e.preventDefault(); addPlayer(playerName, selectedTeamId); setPlayerName(''); setSelectedTeamId(''); };
+                return (<div className="grid md:grid-cols-2 gap-8"><div><h3 className="text-lg font-semibold mb-3 border-b border-gray-700 pb-2">팀 관리</h3><form onSubmit={handleAddTeam} className="flex gap-2 mb-4"><input type="text" value={teamName} onChange={e => setTeamName(e.target.value)} placeholder="새 팀 이름" className="flex-grow bg-gray-700 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" required /><button type="submit" className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded">추가</button></form><ul className="space-y-2 max-h-40 overflow-y-auto">{teams.map(t => (<li key={t.id} className="bg-gray-700 rounded p-3 flex justify-between items-center"><span className="font-semibold">{t.name}</span><button onClick={() => removeTeam(t.id)} className="text-red-500 hover:text-red-400"><Icon name="Trash2" size={18} /></button></li>))}</ul></div><div><h3 className="text-lg font-semibold mb-3 border-b border-gray-700 pb-2">선수 관리</h3><form onSubmit={handleAddPlayer} className="flex flex-col gap-2 mb-4"><input type="text" value={playerName} onChange={e => setPlayerName(e.target.value)} placeholder="선수 닉네임" className="bg-gray-700 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" required /><select value={selectedTeamId} onChange={e => setSelectedTeamId(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="">팀 선택 (또는 개인)</option>{teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select><button type="submit" className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded">추가</button></form><ul className="space-y-2 max-h-40 overflow-y-auto">{players.map(p => (<li key={p.id} className="bg-gray-700 rounded p-3 flex justify-between items-center"><div><span className="font-semibold">{p.name}</span><span className="text-sm text-gray-400 ml-2">{p.teamName}</span></div><button onClick={() => removePlayer(p.id)} className="text-red-500 hover:text-red-400"><Icon name="Trash2" size={18} /></button></li>))}</ul></div></div>);
+            };
+            const SettingsView = ({ settings, setSettingsModalOpen, resetAllData }) => ( <div className="space-y-4"><div><h3 className="text-lg font-semibold mb-2">주요 규칙</h3><div className="bg-gray-700 p-4 rounded-lg grid grid-cols-2 gap-4"><p><strong>목표 점수:</strong> {settings.targetScore}점</p><p><strong>이벤트:</strong> {settings.event.active ? settings.event.name : '없음'}</p></div></div><div><h3 className="text-lg font-semibold mb-2">등수별 점수</h3><div className="bg-gray-700 p-4 rounded-lg grid grid-cols-4 gap-2 text-sm">{Object.entries(settings.rankScores).map(([rank, score]) => (<p key={rank}><strong>{rank}등:</strong> {score}점</p>))}</div></div><div className="flex justify-end gap-4 mt-6"><button onClick={() => setSettingsModalOpen(true)} className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">규칙 수정</button><button onClick={resetAllData} className="bg-red-700 hover:bg-red-600 text-white font-bold py-2 px-4 rounded">전체 초기화</button></div></div>);
+            const SettingsModal = ({ currentSettings, onClose }) => {
+                const [localSettings, setLocalSettings] = useState(currentSettings);
+                const handleSave = async () => {
+                    await supabase.from('settings').upsert({ id: 1, data: localSettings });
+                    onClose();
+                };
+                const handleChange = (e, category, key) => { const { value } = e.target; setLocalSettings(prev => ({ ...prev, [category]: { ...prev[category], [key]: Number(value) || value } })); };
+                const handleRootChange = (e, key) => { const { value } = e.target; setLocalSettings(prev => ({ ...prev, [key]: Number(value) })); };
+                const handleEventChange = (e, key) => { const { value, type, checked } = e.target; const val = type === 'checkbox' ? checked : value; setLocalSettings(prev => ({ ...prev, event: { ...prev.event, [key]: val } })); };
+                return (<div className="modal-backdrop"><div className="modal-content"><h2 className="text-2xl font-bold mb-6">리그 설정 수정</h2><div className="space-y-6"><div><label className="block font-semibold mb-1">목표 점수</label><input type="number" value={localSettings.targetScore} onChange={e => handleRootChange(e, 'targetScore')} className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2" /></div><div><h3 className="font-semibold mb-2">등수별 점수</h3><div className="grid grid-cols-2 sm:grid-cols-4 gap-2">{Object.keys(currentSettings.rankScores).map(rank => (<div key={rank}><label className="text-sm">{rank}등</label><input type="number" value={localSettings.rankScores[rank]} onChange={e => handleChange(e, 'rankScores', rank)} className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1" /></div>))}</div></div><div><h3 className="font-semibold mb-2">연승 보너스</h3><div className="grid grid-cols-3 gap-2">{Object.keys(currentSettings.winStreaks).map(streak => (<div key={streak}><label className="text-sm">{streak}연승</label><input type="number" value={localSettings.winStreaks[streak]} onChange={e => handleChange(e, 'winStreaks', streak)} className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1" /></div>))}</div></div><div><h3 className="font-semibold mb-2">이벤트 설정</h3><div className="bg-gray-800 p-4 rounded-lg space-y-3"><input type="text" value={localSettings.event.name} onChange={e => handleEventChange(e, 'name')} placeholder="이벤트 이름" className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2" /><textarea value={localSettings.event.description} onChange={e => handleEventChange(e, 'description')} placeholder="이벤트 내용" className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2" rows="2"></textarea><div className="flex gap-4"><select value={localSettings.event.type} onChange={e => handleEventChange(e, 'type')} className="flex-grow bg-gray-900 border border-gray-600 rounded px-3 py-2"><option value="없음">없음</option><option value="배율">배율</option><option value="추가">추가 점수</option></select><input type="number" step="0.1" value={localSettings.event.value} onChange={e => handleEventChange(e, 'value')} placeholder="값" className="w-24 bg-gray-900 border border-gray-600 rounded px-3 py-2" /></div><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={localSettings.event.active} onChange={e => handleEventChange(e, 'active')} className="h-5 w-5 rounded bg-gray-900 border border-gray-600 text-blue-500 focus:ring-blue-500" /><span>이벤트 활성화</span></label></div></div></div><div className="flex justify-end gap-4 mt-8"><button onClick={onClose} className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">취소</button><button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">저장</button></div></div></div>);
+            };
+            const GameModal = ({ players, onClose, onSave }) => {
+                const [mode, setMode] = useState('개인전 (솔로)');
+                const [ranks, setRanks] = useState({});
+                const [error, setError] = useState('');
+                const availablePlayers = useMemo(() => { if (mode === '더블업 (단체전)') return players.length === 8 ? players : []; return players; }, [mode, players]);
+                const handleRankChange = (playerId, rank) => { setRanks(prev => ({ ...prev, [playerId]: parseInt(rank) })); };
+                const handleSubmit = () => {
+                    const assignedRanks = Object.values(ranks);
+                    if (assignedRanks.length !== availablePlayers.length || assignedRanks.some(r => !r)) { setError('모든 참가자의 등수를 입력해야 합니다.'); return; }
+                    const rankSet = new Set(assignedRanks);
+                    if (rankSet.size !== assignedRanks.length) { setError('등수가 중복되었습니다.'); return; }
+                    const results = Object.entries(ranks).map(([id, rank]) => ({ id: Number(id), rank }));
+                    onSave({ mode, results });
+                    onClose();
+                };
+                return (<div className="modal-backdrop"><div className="modal-content"><h2 className="text-2xl font-bold mb-4">경기 결과 기록</h2><div className="mb-4"><label className="block font-semibold mb-1">게임 모드</label><select value={mode} onChange={e => setMode(e.target.value)} className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2"><option>개인전 (솔로)</option><option>개인전 (팀)</option><option>더블업 (팀)</option><option>더블업 (단체전)</option></select></div><div className="space-y-2">{availablePlayers.length > 0 ? (availablePlayers.map(p => (<div key={p.id} className="flex justify-between items-center bg-gray-800 p-2 rounded"><div><p className="font-semibold">{p.name}</p><p className="text-sm text-gray-400">{p.teamName}</p></div><select onChange={e => handleRankChange(p.id, e.target.value)} defaultValue="" className="bg-gray-900 border border-gray-600 rounded px-3 py-1"><option value="" disabled>등수</option>{[...Array(8).keys()].map(i => <option key={i+1} value={i+1}>{i+1}등</option>)}</select></div>))) : (<p className="text-center text-yellow-400 p-4">{mode === '더블업 (단체전)' ? '단체전은 참가자가 8명일 때만 가능합니다.' : '참가자를 먼저 추가해주세요.'}</p>)}</div>{error && <p className="text-red-500 mt-4 text-center">{error}</p>}<div className="flex justify-end gap-4 mt-6"><button onClick={onClose} className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">취소</button><button onClick={handleSubmit} disabled={availablePlayers.length === 0} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-500 disabled:cursor-not-allowed">저장</button></div></div></div>);
+            };
+            
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(<App />);
+        }
+    </script>
+</body>
+</html>

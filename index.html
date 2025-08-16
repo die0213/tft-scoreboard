@@ -57,7 +57,7 @@
                 const [appState, setAppState] = useState('loading');
 
                 useEffect(() => {
-                    const fetchAndSetData = async () => {
+                    const fetchInitialData = async () => {
                         const { data: playersData } = await supabase.from('players').select('*');
                         setPlayers(playersData || []);
 
@@ -75,7 +75,8 @@
                         }
                     };
 
-                    fetchAndSetData();
+                    fetchInitialData();
+                    
                     const handlePlayerChanges = (payload) => {
                         if (payload.eventType === 'INSERT') setPlayers(current => [...current, payload.new]);
                         if (payload.eventType === 'UPDATE') setPlayers(current => current.map(p => p.id === payload.new.id ? payload.new : p));
@@ -83,21 +84,24 @@
                     };
                     const handleLeagueChanges = (payload) => {
                         if (payload.eventType === 'INSERT' && payload.new.is_active) {
-                            setActiveLeague(payload.new); setGames([]); setAppState('league');
+                            fetchInitialData(); // 새 리그 시작 시 전체 데이터 리프레시
                         }
                         if (payload.eventType === 'UPDATE') {
-                            if (payload.new.is_active) {
+                            // 현재 리그가 비활성화 되면 로비로 전환
+                            if (activeLeague && payload.new.id === activeLeague.id && !payload.new.is_active) {
+                                fetchInitialData();
+                            } else {
                                 setActiveLeague(payload.new);
                                 if (payload.new.winner) setAppState('victory');
-                            } else if (activeLeague && payload.new.id === activeLeague.id) {
-                                setActiveLeague(null); setGames([]); setAppState('lobby');
                             }
                         }
                     };
                     const handleGameChanges = (payload) => {
-                        if (payload.eventType === 'INSERT') setGames(current => [payload.new, ...current].sort((a,b) => new Date(b.created_at) - new Date(a.created_at)));
-                        if (payload.eventType === 'UPDATE') setGames(current => current.map(g => g.id === payload.new.id ? payload.new : g));
-                        if (payload.eventType === 'DELETE') setGames(current => current.filter(g => g.id !== payload.old.id));
+                        if (activeLeague && payload.new.league_id === activeLeague.id) {
+                            if (payload.eventType === 'INSERT') setGames(current => [payload.new, ...current].sort((a,b) => new Date(b.created_at) - new Date(a.created_at)));
+                            if (payload.eventType === 'UPDATE') setGames(current => current.map(g => g.id === payload.new.id ? payload.new : g));
+                            if (payload.eventType === 'DELETE') setGames(current => current.filter(g => g.id !== payload.old.id));
+                        }
                     };
 
                     const subscriptions = [
@@ -112,7 +116,7 @@
                 if (appState === 'loading') return <div className="flex justify-center items-center h-screen"><p>데이터 로딩 중...</p></div>;
                 if (appState === 'lobby') return <Lobby players={players} />;
                 if (appState === 'league' && activeLeague) return <LeagueView league={activeLeague} players={players} games={games} />;
-                if (appState === 'victory' && activeLeague) return <VictoryView league={activeLeague} players={players} games={games} />;
+                if (appState === 'victory' && activeLeague) return <VictoryView league={activeLeague} players={players} games={games} setAppState={setAppState} />;
                 
                 return <div>오류가 발생했습니다. 새로고침 해주세요.</div>;
             }
@@ -249,7 +253,6 @@
             
             const LeagueView = ({ league, players, games }) => {
                 const [activeTab, setActiveTab] = useState('board');
-                
                 const getTeamPlayers = (teamColor) => league.teams[teamColor].map(id => players.find(p => p.id === id)).filter(Boolean);
 
                 return (
@@ -383,16 +386,11 @@
                         const teamColor = league.teams.red.includes(player.id) ? 'red' : 'blue';
                         
                         let scoreChange = league.settings.rankScores[rank] || 0;
-                        // Apply event effects
                         if (league.settings.event.active) {
                             const event = league.settings.event;
-                            if (event.type === '배율') {
-                                scoreChange *= event.value;
-                            } else if (event.type === '추가') {
-                                scoreChange += event.value;
-                            } else if (event.type === '감소') {
-                                scoreChange -= event.value;
-                            }
+                            if (event.type === '배율') scoreChange *= event.value;
+                            else if (event.type === '추가') scoreChange += event.value;
+                            else if (event.type === '감소') scoreChange -= event.value;
                         }
 
                         scoreChanges[player.id] = { rank, scoreChange };
@@ -432,7 +430,11 @@
                             {participants.map(p => (
                                 <div key={p.id} className="flex justify-between items-center bg-gray-700 p-2 rounded">
                                     <p className="font-semibold">{p.name}</p>
-                                    <select value={game.ranks?.[p.id] || ''} onChange={e => handleRankChange(p.id, e.target.value)} className="bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm">
+                                    <select 
+                                        value={game.ranks?.[p.id] || ''}
+                                        onChange={e => handleRankChange(p.id, e.target.value)} 
+                                        className="bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm"
+                                    >
                                         <option value="">등수</option>
                                         {[...Array(8).keys()].map(i => {
                                             const rankValue = i + 1;
@@ -455,7 +457,7 @@
 
             const TeamScoreCard = ({ teamColor, teamName, players, score }) => ( <div className={`p-4 rounded-lg ${teamColor === 'red' ? 'bg-red-900/50' : 'bg-blue-900/50'}`}><h2 className={`text-2xl font-bold text-center mb-4 ${teamColor === 'red' ? 'text-red-300' : 'text-blue-300'}`}>{teamName}</h2><p className="text-5xl font-bold text-center text-white mb-4">{score}점</p><div className="space-y-2">{players.map(p => (<div key={p.id} className="bg-gray-800 p-2 rounded text-center">{p.name}</div>))}</div></div> );
             const GameHistory = ({ games, players }) => ( <div className="bg-gray-800 p-4 rounded-lg mt-8"><h2 className="text-xl font-bold mb-4">경기 기록</h2><div className="space-y-4 max-h-96 overflow-y-auto">{games.map(game => (<div key={game.id} className="bg-gray-700 p-3 rounded"><p className="text-xs text-gray-400 mb-2">{new Date(game.created_at).toLocaleString()}</p><ul className="space-y-1">{Object.entries(game.score_changes || {}).sort(([,a],[,b]) => a.rank - b.rank).map(([playerId, data]) => { const player = players.find(p => p.id == playerId); return (<li key={playerId} className="flex justify-between text-sm"><span>{data.rank}등: {player?.name || '?'}</span><span className={data.scoreChange >= 0 ? 'text-green-400' : 'text-red-400'}>{data.scoreChange >= 0 ? '+' : ''}{data.scoreChange}점</span></li>); })}</ul></div>))}</div></div> );
-            const VictoryView = ({ league, players, games }) => {
+            const VictoryView = ({ league, players, games, setAppState }) => {
                 const gameStats = useMemo(() => {
                     const playerStats = {};
                     [...league.teams.red, ...league.teams.blue].forEach(id => playerStats[id] = { score: 0, games: 0 });
@@ -464,7 +466,10 @@
                     return { mvp: [...allPlayers].sort((a, b) => b.score - a.score)[0], lvp: [...allPlayers].sort((a, b) => a.score - b.score)[0], mostGames: [...allPlayers].sort((a, b) => b.games - a.games)[0] };
                 }, [league, games, players]);
 
-                const handleNewLeague = async () => { await supabase.from('leagues').update({ is_active: false }).eq('id', league.id); };
+                const handleNewLeague = async () => { 
+                    await supabase.from('leagues').update({ is_active: false }).eq('id', league.id);
+                    setAppState('lobby'); // [FIX] Immediately transition to lobby
+                };
 
                 return (
                     <div className="container mx-auto p-4 md:p-8 text-center">

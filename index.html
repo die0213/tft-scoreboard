@@ -46,7 +46,7 @@
 
             const initialSettings = {
                 targetScore: 100,
-                rankScores: { 1: 10, 2: 8, 3: 7, 4: 6, 5: 4, 6: 3, 7: 2, 8: 1 },
+                rankScores: { 1: 10, 2: 7, 3: 5, 4: 3, 5: 0, 6: 0, 7: -2, 8: -4 },
                 event: { name: "이벤트 없음", description: "", type: "없음", value: 0, active: false }
             };
 
@@ -468,7 +468,7 @@
 
                 const handleNewLeague = async () => { 
                     await supabase.from('leagues').update({ is_active: false }).eq('id', league.id);
-                    setAppState('lobby'); // [FIX] Immediately transition to lobby
+                    // The subscription in App component will handle the state change to 'lobby'
                 };
 
                 return (

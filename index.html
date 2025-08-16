@@ -55,9 +55,17 @@
                 const [activeLeague, setActiveLeague] = useState(null);
                 const [games, setGames] = useState([]);
                 const [appState, setAppState] = useState('loading');
+                const [modal, setModal] = useState({ isOpen: false, title: '', content: '', onConfirm: null });
+
+                const showModal = (title, content, onConfirm = null) => {
+                    setModal({ isOpen: true, title, content, onConfirm });
+                };
+                const closeModal = () => {
+                    setModal({ isOpen: false, title: '', content: '', onConfirm: null });
+                };
 
                 useEffect(() => {
-                    const fetchInitialData = async () => {
+                    const fetchAndSetData = async () => {
                         const { data: playersData } = await supabase.from('players').select('*');
                         setPlayers(playersData || []);
 
@@ -75,7 +83,7 @@
                         }
                     };
 
-                    fetchInitialData();
+                    fetchAndSetData();
                     
                     const handlePlayerChanges = (payload) => {
                         if (payload.eventType === 'INSERT') setPlayers(current => [...current, payload.new]);
@@ -84,12 +92,11 @@
                     };
                     const handleLeagueChanges = (payload) => {
                         if (payload.eventType === 'INSERT' && payload.new.is_active) {
-                            fetchInitialData(); // 새 리그 시작 시 전체 데이터 리프레시
+                            fetchAndSetData();
                         }
                         if (payload.eventType === 'UPDATE') {
-                            // 현재 리그가 비활성화 되면 로비로 전환
                             if (activeLeague && payload.new.id === activeLeague.id && !payload.new.is_active) {
-                                fetchInitialData();
+                                fetchAndSetData();
                             } else {
                                 setActiveLeague(payload.new);
                                 if (payload.new.winner) setAppState('victory');
@@ -113,15 +120,23 @@
                     return () => subscriptions.forEach(sub => supabase.removeChannel(sub));
                 }, [activeLeague]);
                 
-                if (appState === 'loading') return <div className="flex justify-center items-center h-screen"><p>데이터 로딩 중...</p></div>;
-                if (appState === 'lobby') return <Lobby players={players} />;
-                if (appState === 'league' && activeLeague) return <LeagueView league={activeLeague} players={players} games={games} />;
-                if (appState === 'victory' && activeLeague) return <VictoryView league={activeLeague} players={players} games={games} setAppState={setAppState} />;
-                
-                return <div>오류가 발생했습니다. 새로고침 해주세요.</div>;
+                const renderContent = () => {
+                    if (appState === 'loading') return <div className="flex justify-center items-center h-screen"><p>데이터 로딩 중...</p></div>;
+                    if (appState === 'lobby') return <Lobby players={players} showModal={showModal} />;
+                    if (appState === 'league' && activeLeague) return <LeagueView league={activeLeague} players={players} games={games} showModal={showModal} />;
+                    if (appState === 'victory' && activeLeague) return <VictoryView league={activeLeague} players={players} games={games} />;
+                    return <div>오류가 발생했습니다. 새로고침 해주세요.</div>;
+                };
+
+                return (
+                    <div>
+                        {renderContent()}
+                        <Modal modal={modal} closeModal={closeModal} />
+                    </div>
+                );
             }
 
-            const Lobby = ({ players }) => {
+            const Lobby = ({ players, showModal }) => {
                 const [newPlayerName, setNewPlayerName] = useState('');
                 const [teams, setTeams] = useState({ red: [], blue: [] });
                 const [targetScore, setTargetScore] = useState(100);
@@ -186,7 +201,7 @@
                 const handleStartLeague = async () => {
                     const teamPlayerIds = { red: teams.red.map(p => p.id), blue: teams.blue.map(p => p.id) };
                     if (teamPlayerIds.red.length === 0 || teamPlayerIds.blue.length === 0) {
-                        alert("양 팀에 최소 한 명의 선수가 있어야 합니다.");
+                        showModal("오류", "양 팀에 최소 한 명의 선수가 있어야 합니다.");
                         return;
                     }
                     
@@ -201,10 +216,28 @@
                         if (error) throw error;
                     } catch (error) {
                         console.error("리그 시작 오류:", error);
-                        alert(`리그 시작에 실패했습니다: ${error.message}`);
+                        showModal("오류", `리그 시작에 실패했습니다: ${error.message}`);
                     } finally {
                         setIsStarting(false);
                     }
+                };
+                
+                const handleResetAllData = () => {
+                    showModal(
+                        "전체 데이터 초기화",
+                        "정말로 모든 선수, 리그, 게임 기록을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+                        async () => {
+                            console.log("Resetting all data...");
+                            const { error: gError } = await supabase.from('games').delete().neq('id', 0);
+                            const { error: lError } = await supabase.from('leagues').delete().neq('id', 0);
+                            const { error: pError } = await supabase.from('players').delete().neq('id', 0);
+                            if (gError || lError || pError) {
+                                showModal("오류", "데이터 초기화에 실패했습니다.");
+                            } else {
+                                showModal("성공", "모든 데이터가 초기화되었습니다.");
+                            }
+                        }
+                    );
                 };
 
                 return (
@@ -222,6 +255,9 @@
                                     <div className="space-y-2 max-h-60 overflow-y-auto p-1 min-h-[100px]">
                                         {unassignedPlayers.map(p => <PlayerCard key={p.id} player={p} />)}
                                     </div>
+                                </div>
+                                <div className="text-center mt-4">
+                                    <button onClick={handleResetAllData} className="bg-red-800 hover:bg-red-700 text-white font-bold py-2 px-4 rounded text-sm">전체 데이터 초기화</button>
                                 </div>
                             </div>
                             <div className="md:col-span-2 bg-gray-800 p-4 rounded-lg">
@@ -251,7 +287,7 @@
             const PlayerCard = ({ player }) => ( <div draggable="true" onDragStart={(e) => e.dataTransfer.setData("playerId", player.id)} className="player-card bg-gray-700 p-2 rounded text-center">{player.name}</div> );
             const TeamDropZone = ({ team, title, players, onDrop, onDragOver, onDragLeave }) => ( <div onDrop={(e) => onDrop(e, team)} onDragOver={onDragOver} onDragLeave={onDragLeave} className={`drop-zone p-3 rounded-lg ${team === 'red' ? 'bg-red-900/50' : 'bg-blue-900/50'}`}><h3 className={`text-lg font-bold text-center ${team === 'red' ? 'text-red-300' : 'text-blue-300'}`}>{title}</h3><div className="mt-2 space-y-2 min-h-[150px]">{players.map(p => <PlayerCard key={p.id} player={p} />)}</div></div> );
             
-            const LeagueView = ({ league, players, games }) => {
+            const LeagueView = ({ league, players, games, showModal }) => {
                 const [activeTab, setActiveTab] = useState('board');
                 const getTeamPlayers = (teamColor) => league.teams[teamColor].map(id => players.find(p => p.id === id)).filter(Boolean);
 
@@ -270,15 +306,15 @@
                                     <TeamScoreCard teamColor="red" teamName="레드 팀" players={getTeamPlayers('red')} score={league.scores.red} />
                                     <TeamScoreCard teamColor="blue" teamName="블루 팀" players={getTeamPlayers('blue')} score={league.scores.blue} />
                                 </div>
-                                <GameBoard league={league} players={players} games={games} />
+                                <GameBoard league={league} players={players} games={games} showModal={showModal} />
                             </div>
                         )}
-                        {activeTab === 'settings' && <LeagueSettings league={league} />}
+                        {activeTab === 'settings' && <LeagueSettings league={league} showModal={showModal} />}
                     </div>
                 );
             };
 
-            const GameBoard = ({ league, players, games }) => {
+            const GameBoard = ({ league, players, games, showModal }) => {
                 const ongoingGames = useMemo(() => games.filter(g => g.status === 'ongoing'), [games]);
                 const finishedGames = useMemo(() => games.filter(g => g.status === 'finished'), [games]);
                 const teamSize = league.teams.red.length;
@@ -294,8 +330,8 @@
                                         <div key={index} className="bg-gray-900/50 p-4 rounded-lg">
                                             <h3 className="font-bold text-lg mb-2">그룹 {index + 1}</h3>
                                             {gameForGroup ? 
-                                                <OngoingGame game={gameForGroup} league={league} players={players} /> : 
-                                                <Matchmaker league={league} players={players} ongoingGames={ongoingGames} />
+                                                <OngoingGame game={gameForGroup} league={league} players={players} showModal={showModal} /> : 
+                                                <Matchmaker league={league} players={players} ongoingGames={ongoingGames} showModal={showModal} />
                                             }
                                         </div>
                                     );
@@ -307,7 +343,7 @@
                 );
             };
 
-            const Matchmaker = ({ league, players, ongoingGames }) => {
+            const Matchmaker = ({ league, players, ongoingGames, showModal }) => {
                 const [redPlayer, setRedPlayer] = useState('');
                 const [bluePlayer, setBluePlayer] = useState('');
 
@@ -326,7 +362,7 @@
                 [league, players, busyPlayerIds, redPlayer]);
 
                 const handleStartGame = async () => {
-                    if (!redPlayer || !bluePlayer) { alert("양 팀에서 선수를 한 명씩 선택해야 합니다."); return; }
+                    if (!redPlayer || !bluePlayer) { showModal("오류", "양 팀에서 선수를 한 명씩 선택해야 합니다."); return; }
                     const participants = [Number(redPlayer), Number(bluePlayer)];
                     await supabase.from('games').insert({ league_id: league.id, participants });
                 };
@@ -356,7 +392,7 @@
                 );
             };
 
-            const OngoingGame = ({ game, league, players }) => {
+            const OngoingGame = ({ game, league, players, showModal }) => {
                 const [isFinalizing, setIsFinalizing] = useState(false);
                 const [finalizedData, setFinalizedData] = useState(null);
 
@@ -370,10 +406,10 @@
                     await supabase.from('games').update({ ranks: newRanks }).eq('id', game.id);
                 };
 
-                const handleCancelGame = async () => {
-                    if (window.confirm("이 게임을 취소하시겠습니까?")) {
+                const handleCancelGame = () => {
+                    showModal("경기 취소", "이 게임을 취소하시겠습니까?", async () => {
                         await supabase.from('games').delete().eq('id', game.id);
-                    }
+                    });
                 };
 
                 const handleFinalizeGame = async () => {
@@ -468,7 +504,6 @@
 
                 const handleNewLeague = async () => { 
                     await supabase.from('leagues').update({ is_active: false }).eq('id', league.id);
-                    // The subscription in App component will handle the state change to 'lobby'
                 };
 
                 return (
@@ -487,7 +522,7 @@
                 );
             };
             
-            const LeagueSettings = ({ league }) => {
+            const LeagueSettings = ({ league, showModal }) => {
                 const [targetScore, setTargetScore] = useState(league.target_score);
                 const [settings, setSettings] = useState(league.settings);
                 const [isSaving, setIsSaving] = useState(false);
@@ -503,9 +538,9 @@
                     setIsSaving(true);
                     const { error } = await supabase.from('leagues').update({ target_score: targetScore, settings: settings }).eq('id', league.id);
                     if (error) {
-                        alert(`저장 실패: ${error.message}`);
+                        showModal("오류", `저장 실패: ${error.message}`);
                     } else {
-                        alert('설정이 저장되었습니다.');
+                        showModal("성공", "설정이 저장되었습니다.");
                     }
                     setIsSaving(false);
                 };
@@ -559,8 +594,38 @@
                 );
             };
 
+            const Modal = ({ modal, closeModal }) => {
+                if (!modal.isOpen) return null;
+
+                const handleConfirm = () => {
+                    if (modal.onConfirm) {
+                        modal.onConfirm();
+                    }
+                    closeModal();
+                };
+
+                return (
+                    <div className="modal-backdrop">
+                        <div className="modal-content text-center">
+                            <h2 className="text-2xl font-bold mb-4">{modal.title}</h2>
+                            <p className="text-gray-300 mb-6">{modal.content}</p>
+                            <div className="flex justify-center gap-4">
+                                {modal.onConfirm ? (
+                                    <>
+                                        <button onClick={closeModal} className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-6 rounded">취소</button>
+                                        <button onClick={handleConfirm} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded">확인</button>
+                                    </>
+                                ) : (
+                                    <button onClick={closeModal} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-8 rounded">확인</button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
             ReactDOM.createRoot(document.getElementById('root')).render(<App />);
         }
     </script>
 </body>
-</html>
+</ht
